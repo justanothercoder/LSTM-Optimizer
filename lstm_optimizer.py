@@ -1,0 +1,182 @@
+import theano
+import theano.tensor as T
+import lasagne as L
+
+class NoGrads(theano.gof.Op):
+    __props__ = ()
+    def make_node(self, x):
+        x = theano.tensor.as_tensor_variable(x)
+        return theano.Apply(self, [x], [x.type()])
+    def perform(self, node, inputs, output_storage):
+        x = inputs[0]
+        z = output_storage[0]
+        z[0] = x
+    def infer_shape(self, node, i0_shapes):
+        return i0_shapes
+    def grad(self, inputs, output_grads):
+        return [0 * output_grads[0]]
+
+no_grads = NoGrads()
+
+class LSTMOptimizerLayer(L.layers.MergeLayer):
+    def __init__(self, incoming, num_units, function, n_steps, n_gac=0, use_function_values=False,
+                 ingate=L.layers.Gate(), forgetgate=L.layers.Gate(),
+                 cell=L.layers.Gate(W_cell=None, nonlinearity=L.nonlinearities.tanh),
+                 outgate=L.layers.Gate(), nonlinearity=L.nonlinearities.tanh,
+                 cell_init=L.init.Constant(0.), hid_init=L.init.Constant(0.), gradient_steps=-1,
+                 learn_init=False, grad_clipping=0, only_return_final=False, **kwargs):
+
+        incomings = [incoming]
+        self.hid_init_incoming_index = -1
+        self.cell_init_incoming_index = -1
+        
+        if isinstance(hid_init, L.layers.Layer):
+            incomings.append(hid_init)
+            self.hid_init_incoming_index = len(incomings) - 1
+        
+        if isinstance(cell_init, L.layers.Layer):
+            incomings.append(cell_init)
+            self.cell_init_incoming_index = len(incomings) - 1
+
+        super(LSTMOptimizerLayer, self).__init__(incomings, **kwargs)
+
+        self.nonlinearity = nonlinearity or L.nonlinearities.identity
+
+        self.learn_init = learn_init
+        self.num_units = num_units
+        self.grad_clipping = grad_clipping
+        self.only_return_final = only_return_final
+        
+        self.gradient_steps = gradient_steps
+        
+        self.func = function
+        self.n_steps = n_steps
+        self.n_gac = n_gac
+        self.use_function_values = use_function_values
+
+        # Retrieve the dimensionality of the incoming layer
+        input_shape = self.input_shapes[0]
+
+        num_inp = 1 + int(use_function_values)
+
+        def add_gate_params(gate, gate_name):
+            """ Convenience function for adding layer parameters from a L.layers.Gate
+            instance. """
+            return (self.add_param(gate.W_in, (num_inp, num_units), name="W_in_to_{}".format(gate_name)),
+                    self.add_param(gate.W_hid, (num_units, num_units), name="W_hid_to_{}".format(gate_name)),
+                    self.add_param(gate.b, (num_units,), name="b_{}".format(gate_name), regularizable=False),
+                    gate.nonlinearity)
+
+        W_hidden_to_output = L.init.GlorotUniform().sample((num_units, 1))
+        self.W_hidden_to_output = self.add_param(W_hidden_to_output, (num_units, 1), name='W_hidden_to_output', regularizable=False)
+
+        # Add in parameters from the supplied L.layers.Gate instances
+        (self.W_in_to_ingate, self.W_hid_to_ingate, self.b_ingate, self.nonlinearity_ingate) = add_gate_params(ingate, 'ingate')
+        (self.W_in_to_forgetgate, self.W_hid_to_forgetgate, self.b_forgetgate, self.nonlinearity_forgetgate) = add_gate_params(forgetgate, 'forgetgate')
+        (self.W_in_to_cell, self.W_hid_to_cell, self.b_cell, self.nonlinearity_cell) = add_gate_params(cell, 'cell')
+        (self.W_in_to_outgate, self.W_hid_to_outgate, self.b_outgate, self.nonlinearity_outgate) = add_gate_params(outgate, 'outgate')
+
+        # Setup initial values for the cell and the hidden units
+        if isinstance(cell_init, L.layers.Layer):
+            self.cell_init = cell_init
+        else:
+            self.cell_init = self.add_param(cell_init, (1, self.num_units), name="cell_init", trainable=learn_init, regularizable=False)
+
+        if isinstance(hid_init, L.layers.Layer):
+            self.hid_init = hid_init
+        else:
+            self.hid_init = self.add_param(hid_init, (1, self.num_units), name="hid_init", trainable=learn_init, regularizable=False)
+
+    def get_output_shape_for(self, input_shapes):
+        input_shape = input_shapes[0]
+        if self.only_return_final:
+            return self.n_coords
+        else:
+            return self.n_steps, self.n_coords
+
+    def get_output_for(self, inputs, **kwargs):
+        # Retrieve the layer input
+        input = inputs[0]
+        # Retrieve the mask when it is supplied
+        hid_init = None
+        cell_init = None
+        if self.hid_init_incoming_index > 0:
+            hid_init = inputs[self.hid_init_incoming_index]
+        if self.cell_init_incoming_index > 0:
+            cell_init = inputs[self.cell_init_incoming_index]
+
+        # Because scan iterates over the first dimension we dimshuffle to
+        n_coords = input.shape[0]
+
+        W_in_stacked = T.concatenate([self.W_in_to_ingate, self.W_in_to_forgetgate, self.W_in_to_cell, self.W_in_to_outgate], axis=1)
+        W_hid_stacked = T.concatenate([self.W_hid_to_ingate, self.W_hid_to_forgetgate, self.W_hid_to_cell, self.W_hid_to_outgate], axis=1)
+        b_stacked = T.concatenate([self.b_ingate, self.b_forgetgate, self.b_cell, self.b_outgate], axis=0)
+
+        def slice_w(x, n):
+            return x[:, n*self.num_units:(n+1)*self.num_units]
+
+        def step(input_n, cell_previous, hid_previous, *args):
+            input_n = T.dot(input_n, W_in_stacked) + b_stacked
+            gates = input_n + T.dot(hid_previous, W_hid_stacked)
+
+            if self.grad_clipping:
+                gates = theano.gradient.grad_clip(gates, -self.grad_clipping, self.grad_clipping)
+
+            ingate = slice_w(gates, 0)
+            forgetgate = slice_w(gates, 1)
+            cell_input = slice_w(gates, 2)
+            outgate = slice_w(gates, 3)
+
+            ingate = self.nonlinearity_ingate(ingate)
+            forgetgate = self.nonlinearity_forgetgate(forgetgate)
+            cell_input = self.nonlinearity_cell(cell_input)
+
+            cell = forgetgate * cell_previous + ingate * cell_input
+            outgate = self.nonlinearity_outgate(outgate)
+
+            if self.n_gac > 0:
+                cell = T.set_subtensor(cell[:, :self.n_gac], cell[:, :self.n_gac].mean(axis=0))
+
+            hid = outgate * self.nonlinearity(cell)
+            return [cell, hid]
+
+        from theano.printing import Print as TPP
+
+        def step_opt(cell_previous, hid_previous, theta_previous, *args):
+            func = self.func(theta_previous)
+
+            input_n = no_grads(theano.grad(func, theta_previous))
+
+            if self.use_function_values:
+                input_n = T.concatenate([input_n.dimshuffle(0, 'x'), T.ones((input_n.shape[0], 1)) * func], axis=1)
+            else:
+                input_n = input_n.dimshuffle(0, 'x')
+
+            cell, hid = step(input_n, cell_previous, hid_previous, *args)
+
+            theta = theta_previous + hid.dot(self.W_hidden_to_output).dimshuffle(0)
+            return cell, hid, theta, func
+
+        # Dot against a 1s vector to repeat to shape (num_batch, num_units)
+        ones = T.ones((n_coords, 1))
+        if not isinstance(self.cell_init, L.layers.Layer):
+            cell_init = T.dot(ones, self.cell_init)
+
+        if not isinstance(self.hid_init, L.layers.Layer):
+            hid_init = T.dot(ones, self.hid_init)
+
+        theta_init = input
+
+        # The hidden-to-hidden weight matrix is always used in step
+        non_seqs = [W_hid_stacked]
+        non_seqs += [W_in_stacked, b_stacked, self.W_hidden_to_output]
+
+        cell_out, hid_out, theta_out, loss_out = theano.scan(
+            fn=step_opt,
+            outputs_info=[cell_init, hid_init, theta_init, None],
+            non_sequences=non_seqs,
+            n_steps=self.n_steps,
+            truncate_gradient=self.gradient_steps,
+            strict=True)[0]
+
+        return theta_out, loss_out
