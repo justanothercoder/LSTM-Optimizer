@@ -5,13 +5,14 @@ import theano.tensor as T
 import lasagne as L
 
 class NTMOptStep(L.layers.MergeLayer):
-    def __init__(self, incoming, memory_in, num_units, loglr=True,
-                 W_hidden_to_output=L.init.GlorotUniform(),
+    def __init__(self, incoming, memory_in, num_units, loglr=True, memdot=False,
+                 W_hidden_to_output=L.init.GlorotUniform(), 
                  **kwargs):
 
         incomings = [incoming, memory_in]
         super(NTMOptStep, self).__init__(incomings, **kwargs)
 
+        self.memdot = memdot
         self.loglr = loglr
         self.num_out = 1 + int(loglr) + 3 # a, b, r + delta + loglr
         self.W_hidden_to_output = self.add_param(W_hidden_to_output, (num_units, self.num_out), name='W_hidden_to_output', regularizable=False)
@@ -29,5 +30,8 @@ class NTMOptStep(L.layers.MergeLayer):
         else:
             dtheta = out[:, 0]
             a, b, r = out[:, 1], out[:, 2], out[:, 3]
+
+        if self.memdot:
+            dtheta = memory.dot(dtheta)
 
         return dtheta, r.dimshuffle(0, 'x'), memory + T.dot(a, b.T)

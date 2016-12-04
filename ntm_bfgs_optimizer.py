@@ -18,14 +18,14 @@ from trainable_optimizer import TrainableOptimizer
 class NTM_BFGS_Optimizer(TrainableOptimizer):
     def __init__(self, num_units, 
                  function, 
-                 n_layers=2, n_gac=0,
+                 n_layers=2, n_gac=0, memdot=False,
                  use_function_values=False, scale_output=1.0,
                  preprocess_input=True, p=10., loglr=True,
                  p_drop_grad=0.0 , fix_drop_grad_over_time=False,
                  p_drop_delta=0.0, fix_drop_delta_over_time=False,
                  p_drop_coord=0.0, fix_drop_coord_over_time=False,
                  gradient_steps=-1, grad_clipping=0,
-                 params_input=None, input_var=None, n_steps=None, 
+                 params_input=None, input_var=None, n_steps=None,
                  **kwargs):
 
         super(NTM_BFGS_Optimizer, self).__init__()
@@ -60,7 +60,7 @@ class NTM_BFGS_Optimizer(TrainableOptimizer):
             recurrent_connections[l_lstm_cell] = l_cell
             recurrent_connections[l_lstm_hid]  = l_hid
 
-        l_opt = NTMOptStep(l_lstm, l_mem_in, num_units, loglr=loglr)
+        l_opt = NTMOptStep(l_lstm, l_mem_in, num_units, loglr=loglr, memdot=memdot)
         l_read = IndexLayer(l_opt, 1, name='index_read')
         l_mem  = IndexLayer(l_opt, 2, name='index_mem')
         l_opt  = IndexLayer(l_opt, 0)
