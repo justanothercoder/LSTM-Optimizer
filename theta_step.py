@@ -3,11 +3,6 @@ import numpy as np
 import theano
 import theano.tensor as T
 import lasagne as L
-from collections import OrderedDict
-
-from theano.sandbox.rng_mrg import MRG_RandomStreams as RandomStreams
-
-from theano.printing import Print as TPP
 
 class ThetaStep(L.layers.MergeLayer):
     def __init__(self, theta_in, delta_in, theta_init, scale_output=1.0, **kwargs):

@@ -3,11 +3,6 @@ import numpy as np
 import theano
 import theano.tensor as T
 import lasagne as L
-from collections import OrderedDict
-
-from theano.sandbox.rng_mrg import MRG_RandomStreams as RandomStreams
-
-from theano.printing import Print as TPP
 
 class LSTMStep(L.layers.MergeLayer):
     def __init__(self, incoming, cell_in, hid_in, num_units, n_gac=0,
