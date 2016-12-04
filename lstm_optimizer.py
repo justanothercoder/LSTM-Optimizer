@@ -4,11 +4,6 @@ import numpy as np
 import theano
 import theano.tensor as T
 import lasagne as L
-from collections import OrderedDict
-
-from theano.sandbox.rng_mrg import MRG_RandomStreams as RandomStreams
-
-from theano.printing import Print as TPP
 
 from recurrence import Recurrence
 from lstm_step import LSTMStep
@@ -18,7 +13,9 @@ from grad_layer import GradLayer
 from theta_step import ThetaStep
 from preprocess_layer import PreprocessLayer
 
-class LSTM_Optimizer:
+from trainable_optimizer import TrainableOptimizer
+
+class LSTM_Optimizer(TrainableOptimizer):
     def __init__(self, num_units,
                  function,
                  n_layers=2, n_gac=0,  
@@ -30,6 +27,8 @@ class LSTM_Optimizer:
                  gradient_steps=-1, grad_clipping=0,
                  params_input=None, input_var=None, n_steps=None, 
                  **kwargs):
+        
+        super(LSTM_Optimizer, self).__init__()
 
         self.num_units = num_units
         input_var = input_var or T.vector()
@@ -77,85 +76,19 @@ class LSTM_Optimizer:
 
         self.input_var = input_var
         self.n_steps = n_steps
+
+    def get_params(self):
+        return L.layers.get_all_params(self.l_rec)
+
+    def get_params_values(self):
+        return L.layers.get_all_param_values(self.l_rec)
+
+    def get_output(self, **kwargs):
+        return L.layers.get_output(self.l_rec, **kwargs)
+
+    def get_net(self):
+        return self.l_rec
         
-    def reset_network(self):
-        L.layers.set_all_param_values(self.l_rec, self.params_init)
-
-    def optimizer_loss(self, loss_history, loss_type='sum', M=np):
-        if loss_type == 'sum':
-            loss = loss_history.sum()
-        elif loss_type == 'prod':
-            loss = M.log(loss_history).sum()
-        elif loss_type == 'weighted_prod':
-            loss = (M.log(loss_history) * 0.9 ** M.arange(loss_history.shape[0])[::-1]).sum()
-        elif loss_type == 'norm_sum':
-            loss = loss_history[1:].sum() / loss_history[0]
-        elif loss_type == 'rel_sum':
-            loss = (loss_history[1:] / loss_history[:-1]).sum()
-
-        return loss
-
-    def prepare(self, func_params, start_lr=0.01, lambd=1e-5, loss_type='sum'):
-        self.loss_type = loss_type
-        (theta_history, loss_history), scan_updates = L.layers.get_output(self.l_rec)
-
-        loss = self.optimizer_loss(loss_history, loss_type, M=T)
-        loss += lambd * L.regularization.regularize_network_params(self.l_rec, L.regularization.l2)
-                
-        self.lr = theano.shared(np.array(0.01, dtype=np.float32))
-
-        params = L.layers.get_all_params(self.l_rec)
-        updates = L.updates.adam(loss, params, learning_rate=self.lr)
-        updates.update(scan_updates)
-        
-        t = time.time()
-        self.loss_fn = theano.function([self.input_var, self.n_steps] + func_params, [theta_history, loss_history], allow_input_downcast=True, updates=scan_updates)
-        print("Time compiling loss_fn: {}".format(time.time() - t))
-        
-        t = time.time()
-        self.train_fn = theano.function([self.input_var, self.n_steps] + func_params, [theta_history, loss_history], updates=updates, allow_input_downcast=True)
-        print("Time compiling train_fn: {}".format(time.time() - t))
-        
-        (theta_history_det, loss_history_det), scan_updates_det = L.layers.get_output(self.l_rec, deterministic=True)
-        self.loss_det_fn = theano.function([self.input_var, self.n_steps] + func_params, [theta_history_det, loss_history_det], allow_input_downcast=True, updates=scan_updates_det)
-        
-        self.params_init = L.layers.get_all_param_values(self.l_rec)
-        
-    def train(self, sample_function, n_iter=100, n_epochs=50, batch_size=100, decay_rate=0.96, **kwargs):
-        optimizer_loss = []
-        optimizer_moving_loss = []
-        moving_loss = None
-
-        for epoch in range(n_epochs):
-            t = time.time()    
-
-            training_loss_history = []
-            for j in range(batch_size):
-                theta, params = sample_function()
- 
-                theta_history, loss_history = self.train_fn(theta, n_iter, *params)
-                training_loss_history.append(loss_history)
-
-                loss = self.optimizer_loss(loss_history, self.loss_type)
-                optimizer_loss.append(loss)
-
-                if moving_loss is None:
-                    moving_loss = loss
-                else:
-                    moving_loss = 0.9 * moving_loss + 0.1 * loss
-
-                optimizer_moving_loss.append(moving_loss)
-
-            print("Epoch number {}".format(epoch))
-            print("\tTime: {}".format(time.time() - t))
-            print("\tOptimizer loss: {}".format(loss))
-            print("\tMedian final loss: {}".format(np.median(training_loss_history, axis=0)[-1]))
-
-            self.lr.set_value((self.lr.get_value() * decay_rate).astype(np.float32))
-            
-    def optimize(self, theta, func_params, n_iter):
-        return self.loss_fn(theta, n_iter, *func_params)
-
     #def get_updates(self, loss, params):
     #    theta = T.concatenate([x.flatten() for x in params])
     #    n_coords = np.sum([np.prod(x.get_value().shape) for x in params])
