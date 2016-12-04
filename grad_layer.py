@@ -10,7 +10,6 @@ class GradLayer(L.layers.Layer):
         self.function = function
 
     def get_output_for(self, input, **kwargs):
-        print("Input ndim: {}".format(input.ndim))
         function = self.function(input)
         grad = theano.gradient.disconnected_grad(theano.grad(function, input))
         return grad, function

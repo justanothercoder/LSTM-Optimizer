@@ -15,62 +15,59 @@ from opt_step import OptStep
 from index_layer import IndexLayer
 from grad_layer import GradLayer
 from theta_step import ThetaStep
+from preprocess_layer import PreprocessLayer
 
 class LSTM_Optimizer:
-    def __init__(self, num_units, function, n_steps, 
-                 n_gac=0, use_function_values=False, n_layers=1, 
-                 preprocess_input=True, p=10., scale_output=1.0,
-                 loglr=True,
+    def __init__(self, num_units,
+                 function, n_steps, 
+                 n_layers=2, n_gac=0,  
+                 use_function_values=False, scale_output=1.0,
+                 preprocess_input=True, p=10., loglr=True,
                  p_drop_grad=0.0 , fix_drop_grad_over_time=False,
                  p_drop_delta=0.0, fix_drop_delta_over_time=False,
                  p_drop_coord=0.0, fix_drop_coord_over_time=False,
-                 gradient_steps=-1,
-                 params_input=None,
-                 input_var=None,
-                 grad_clipping=0, **kwargs):
+                 gradient_steps=-1, grad_clipping=0,
+                 params_input=None, input_var=None,
+                 **kwargs):
 
         self.num_units = num_units
-        
-        self.func = function
-        self.n_steps = n_steps
+        input_var = input_var or T.vector()
 
-        self.input_var = input_var or T.vector()
-
-        l_input = L.layers.InputLayer(shape=(None,), input_var=self.input_var, name='theta_in')
+        l_input = L.layers.InputLayer(shape=(None,), input_var=input_var)
         l_grad = GradLayer(l_input, function)
-        l_lstm = IndexLayer(l_grad, 0)
-        l_lstm = L.layers.DimshuffleLayer(l_lstm, (0, 'x'))
-        l_func = IndexLayer(l_grad, 1, name='func_out')
-        #l_lstm = L.layers.dropout(l_input, p=p_drop_grad) # fix over time
+        l_func = IndexLayer(l_grad, 1)
 
-        #l_lstm = PreprocessLayer(l_lstm, p=p, loglr=loglr, use_function_values=use_function_values)
+        l_lstm = IndexLayer(l_grad, 0)
+        #l_lstm = L.layers.dropout(l_input, p=p_drop_grad) # fix over time
+        l_lstm = PreprocessLayer(l_lstm, preprocess_input=preprocess_input, p=p, use_function_values=use_function_values)
 
         recurrent_connections = { }
 
         for i in range(n_layers):
-            l_lstm_cell = L.layers.InputLayer(shape=(None, num_units), name='cell_in_{}'.format(i))
-            l_lstm_hid = L.layers.InputLayer(shape=(None, num_units), name='hid_in_{}'.format(i))
-            l_lstm = LSTMStep(l_lstm, l_lstm_cell, l_lstm_hid, num_units=num_units, n_gac=n_gac)
+            l_lstm_cell = L.layers.InputLayer(shape=(None, num_units))
+            l_lstm_hid = L.layers.InputLayer(shape=(None, num_units))
+            l_lstm = LSTMStep(l_lstm, l_lstm_cell, l_lstm_hid, num_units=num_units, n_gac=n_gac, grad_clipping=grad_clipping)
 
-            l_cell = IndexLayer(l_lstm, 0, name='cell_out')
-            l_hid = IndexLayer(l_lstm, 1, name='cell_in')
+            l_cell = IndexLayer(l_lstm, 0)
+            l_hid  = IndexLayer(l_lstm, 1)
 
             l_lstm = l_hid
 
             recurrent_connections[l_lstm_cell] = l_cell
-            recurrent_connections[l_lstm_hid] = l_hid
+            recurrent_connections[l_lstm_hid]  = l_hid
 
-        l_opt = OptStep(l_lstm, num_units, num_out=1 + int(loglr), loglr=loglr)
+        l_opt = OptStep(l_lstm, num_units, loglr=loglr)
         #l_opt = L.layers.dropout(l_opt, p=p_drop_delta) # fix over time
 
-        l_opt = ThetaStep(l_input, l_opt, self.input_var, name='theta_out')
+        l_opt = ThetaStep(l_input, l_opt, input_var, scale_output=scale_output)
         recurrent_connections[l_input] = l_opt
 
         l_rec = Recurrence(
             l_input,
             n_steps=n_steps,
             recurrent_connections=recurrent_connections,
-            outputs=[l_opt, l_func]
+            outputs=[l_opt, l_func],
+            gradient_steps=gradient_steps,
         )
 
         self.l_opt = l_opt

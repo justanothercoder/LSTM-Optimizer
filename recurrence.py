@@ -63,11 +63,8 @@ class Recurrence(L.layers.MergeLayer):
                 in zip(input_layers, previous_values)
             }
             #step_map = dict(zip(input_layers, previous_values))
-            for inp in step_map:
-                print(inp.name, step_map[inp].ndim)
 
             outputs = L.layers.get_output(self.outputs + output_layers, step_map)
-
             return outputs
 
         non_seqs = [p for p in self.get_params() if 'init' not in p.name]
