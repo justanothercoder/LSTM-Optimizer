@@ -19,7 +19,7 @@ class NTMPreprocessLayer(L.layers.MergeLayer):
         self.use_function_values = use_function_values
 
     def get_recurrent_inits(self, num_batch):
-        mem_init  = T.ones((num_batch, num_batch))
+        mem_init  = T.eye(num_batch)
         read_init = T.zeros((num_batch, 1)) 
         return [(self.mem_in, mem_init), (self.read_in, read_init)]
 

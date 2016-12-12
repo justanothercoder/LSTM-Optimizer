@@ -12,4 +12,5 @@ class GradLayer(L.layers.Layer):
     def get_output_for(self, input, **kwargs):
         function = self.function(input)
         grad = theano.gradient.disconnected_grad(theano.grad(function, input))
-        return grad, function
+        hess = theano.gradient.disconnected_grad(theano.gradient.hessian(function, input))
+        return grad, function, hess

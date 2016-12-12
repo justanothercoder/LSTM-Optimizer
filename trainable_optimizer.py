@@ -5,6 +5,8 @@ import theano
 import theano.tensor as T
 import lasagne as L
 
+from collections import deque as Deque
+        
 class TrainableOptimizer:
     def __init__(self):
         pass
@@ -55,13 +57,52 @@ class TrainableOptimizer:
         
         #self.params_init = L.layers.get_all_param_values(self.l_rec)
         self.params_init = self.get_params_values()
-        
+
+    def train_with_restarts(self, sample_function, n_iter=100, n_epochs=50, batch_size=100, decay_rate=0.96, n_restarts=5, verbose=True, **kwargs):
+        optimizer_loss = []
+
+        for epoch in range(n_epochs):
+            t = time.time()    
+
+            j = 0
+            problem_bank = Deque([sample_function() for _ in range(batch_size)])
+
+            epoch_loss = 0
+
+            while len(problem_bank) > 0 and j < n_restarts * batch_size:
+                theta, params = problem_bank.popleft()
+
+                training_loss_history = []
+ 
+                theta_history, loss_history = self.train_fn(theta, n_iter, *params)
+                training_loss_history.append(loss_history)
+
+                new_theta = theta_history[loss_history.argmin()]
+                problem_bank.append((new_theta, params))
+
+                loss = self.optimizer_loss(loss_history, self.loss_type)
+                optimizer_loss.append(loss)
+
+                epoch_loss += loss
+                j += 1
+
+            if verbose:
+                print("Epoch number {}".format(epoch))
+                print("\tTime: {}".format(time.time() - t))
+                print("\tOptimizer loss: {}".format(epoch_loss / (batch_size * n_restarts)))
+                print("\tMedian final loss: {}".format(np.median(training_loss_history, axis=0)[-1]))
+
+            self.lr.set_value((self.lr.get_value() * decay_rate).astype(np.float32))
+
+        return optimizer_loss
 
     def train(self, sample_function, n_iter=100, n_epochs=50, batch_size=100, decay_rate=0.96, verbose=True, **kwargs):
         optimizer_loss = []
 
         for epoch in range(n_epochs):
             t = time.time()    
+
+            epoch_loss = 0
 
             training_loss_history = []
             for j in range(batch_size):
@@ -73,10 +114,12 @@ class TrainableOptimizer:
                 loss = self.optimizer_loss(loss_history, self.loss_type)
                 optimizer_loss.append(loss)
 
+                epoch_loss += loss
+
             if verbose:
                 print("Epoch number {}".format(epoch))
                 print("\tTime: {}".format(time.time() - t))
-                print("\tOptimizer loss: {}".format(loss))
+                print("\tOptimizer loss: {}".format(epoch_loss / batch_size))
                 print("\tMedian final loss: {}".format(np.median(training_loss_history, axis=0)[-1]))
 
             self.lr.set_value((self.lr.get_value() * decay_rate).astype(np.float32))

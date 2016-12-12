@@ -4,12 +4,24 @@ import theano
 import theano.tensor as T
 import lasagne as L
 
+from theano.printing import Print as TPP
+
 class NTMOptStep(L.layers.MergeLayer):
-    def __init__(self, incoming, memory_in, num_units, loglr=True, memdot=False,
+    def __init__(self, incoming, memory_in, num_units, loglr=True, memdot=False, 
+                 grad_in=None, hess_in=None,
                  W_hidden_to_output=L.init.GlorotUniform(), 
                  **kwargs):
 
         incomings = [incoming, memory_in]
+            
+        self.grad_in = grad_in
+        self.hess_in = hess_in
+
+        if grad_in is not None:
+            incomings += [grad_in]
+        elif hess_in is not None:
+            incomings += [hess_in]
+
         super(NTMOptStep, self).__init__(incomings, **kwargs)
 
         self.memdot = memdot
@@ -21,7 +33,12 @@ class NTMOptStep(L.layers.MergeLayer):
         return (input_shapes[0][0], 1)
         
     def get_output_for(self, inputs, **kwargs):
-        hid, memory = inputs 
+        if self.grad_in is not None:
+            hid, memory, grad = inputs
+        elif self.hess_in is not None:
+            hid, memory, hess = inputs
+        else:
+            hid, memory = inputs 
         
         out = hid.dot(self.W_hidden_to_output)
         if self.loglr:
@@ -34,4 +51,14 @@ class NTMOptStep(L.layers.MergeLayer):
         if self.memdot:
             dtheta = memory.dot(dtheta)
 
-        return dtheta, r.dimshuffle(0, 'x'), memory + T.dot(a, b.T)
+        if self.hess_in:
+            new_memory = T.nlinalg.pinv(hess)
+        else:
+            new_memory = memory + T.dot(a, b.T)
+
+        new_r = r.dimshuffle(0, 'x')
+
+        if self.grad_in:
+            dtheta = dtheta - grad
+
+        return dtheta, new_r, new_memory
